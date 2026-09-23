@@ -190,3 +190,49 @@ def test_rejects_destructive_sql_fail_closed() -> None:
     source["datasets"][0]["query"] = "DELETE FROM dbo.Items"
     with pytest.raises(report_factory.ReportSpecError, match="SELECT|WITH|não permitido"):
         report_factory.validate_spec(source)
+
+
+def test_identity_namespace_is_deterministic_and_consumer_specific() -> None:
+    source = load_example()
+
+    default_rdl = report_factory.generate_rdl(source)
+    explicit_default_rdl = report_factory.generate_rdl(
+        source, identity_namespace=report_factory.DEFAULT_IDENTITY_NAMESPACE
+    )
+    legacy_rdl = report_factory.generate_rdl(
+        source, identity_namespace="reqsys:report-factory"
+    )
+    legacy_again = report_factory.generate_rdl(
+        source, identity_namespace="reqsys:report-factory"
+    )
+
+    assert default_rdl == explicit_default_rdl
+    assert legacy_rdl == legacy_again
+    assert legacy_rdl != default_rdl
+
+    default_root = ET.fromstring(default_rdl)
+    legacy_root = ET.fromstring(legacy_rdl)
+    assert default_root.findtext(f"{{{report_factory.RD_NS}}}ReportID") != legacy_root.findtext(
+        f"{{{report_factory.RD_NS}}}ReportID"
+    )
+
+
+def test_main_accepts_consumer_identity_namespace(tmp_path: Path) -> None:
+    output = tmp_path / "legacy.rdl"
+    rc = report_factory.main(
+        [
+            "generate",
+            "--spec",
+            str(SPEC_PATH),
+            "--output",
+            str(output),
+        ],
+        identity_namespace="reqsys:report-factory",
+    )
+    assert rc == 0
+
+    generated = output.read_text(encoding="utf-8")
+    direct = report_factory.generate_rdl(
+        load_example(), identity_namespace="reqsys:report-factory"
+    )
+    assert generated == direct
