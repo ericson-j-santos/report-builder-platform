@@ -6,10 +6,28 @@ Reusable platform for declarative, deterministic paginated report generation (RD
 
 The platform owns the generic ReportSpec contract, validation, deterministic RDL generation, Fabric payload creation and optional provider integration. Consumer projects own domain-specific queries, schemas, credentials and environment authorization.
 
+## Versioning
+
+The current canonical release is `v0.1.0`, recorded in `VERSION` and `releases/v0.1.0.json`.
+
+For reproducible consumers, resolve the release manifest and pin the immutable `source_sha` rather than a movable branch or tag. The `v0.1.0` manifest points to:
+
+`07463712333de28a7823491b53c5620bdd4e48b6`
+
+This keeps the human-readable release version and the dependency source independently verifiable.
+
 ## Installation
+
+Local checkout:
 
 ```bash
 python -m pip install .
+```
+
+Pinned consumer installation for `v0.1.0`:
+
+```text
+report-builder-platform @ git+https://github.com/ericson-j-santos/report-builder-platform.git@07463712333de28a7823491b53c5620bdd4e48b6
 ```
 
 ## Quick start
