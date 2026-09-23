@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "package": "report-builder-platform",
+  "version": "0.1.0",
+  "release": "v0.1.0",
+  "source_sha": "07463712333de28a7823491b53c5620bdd4e48b6",
+  "source_pr": 3,
+  "released_at_utc": "2026-09-23T16:05:59Z",
+  "guarantees": {
+    "deterministic_rdl": true,
+    "consumer_identity_namespace": true,
+    "sql_read_only_fail_closed": true,
+    "inline_credentials_fail_closed": true
+  },
+  "consumers": {
+    "reqsys": {
+      "repository": "ericson-j-santos/reqsys-v2-enterprise-real",
+      "identity_namespace": "reqsys:report-factory"
+    }
+  }
+}
