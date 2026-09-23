@@ -16,4 +16,4 @@
 
 ## Consumer boundary
 
-Consumers such as ReqSys own their domain-specific ReportSpec, datasource mapping and environment authorization. This repository owns the reusable generator, validators and provider adapters.
+Consumer applications own their domain-specific ReportSpec, datasource mapping and environment authorization. This repository owns the reusable generator, validators and provider adapters.
