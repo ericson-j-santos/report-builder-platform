@@ -1,13 +1,25 @@
 # Report Builder Platform
 
-Plataforma reutilizável para geração declarativa e determinística de relatórios paginados (RDL), com validação fail-closed e integração opcional com Microsoft Fabric.
+Reusable platform for declarative, deterministic paginated report generation (RDL) and Microsoft Fabric-compatible definitions.
 
-## Objetivo
+## Scope
 
-Separar o núcleo genérico de Report Builder/Report Factory das regras de negócio dos sistemas consumidores.
+The platform owns the generic ReportSpec contract, validation, deterministic RDL generation, Fabric payload creation and optional provider integration. Consumer projects own domain-specific queries, schemas, credentials and environment authorization.
 
-O repositório deve permanecer independente de ReqSys, bancos específicos, credenciais, workspaces e ambientes particulares.
+## Quick start
 
-## Estado
+```bash
+python -m pytest -q
+python -m report_builder.report_factory validate --spec examples/items_by_status.json
+python -m report_builder.report_factory generate --spec examples/items_by_status.json --output artifacts/ItemsByStatus.rdl
+```
 
-Repositório inicializado. A primeira extração funcional será desenvolvida em branch própria e validada por CI antes de integração na main.
+## Guardrails
+
+- SQL is read-only and must start with `SELECT` or `WITH`.
+- Destructive/DDL/EXEC commands fail closed.
+- Inline credentials in connection strings fail closed.
+- Identical ReportSpec input produces identical RDL.
+- External publication credentials are accepted only at runtime.
+
+See `docs/architecture.md` and `docs/migration-from-reqsys.md`.
