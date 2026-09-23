@@ -22,6 +22,7 @@ ET.register_namespace("rd", RD_NS)
 ET.register_namespace("df", DF_NS)
 
 FABRIC_BASE_URL = "https://api.fabric.microsoft.com/v1"
+DEFAULT_IDENTITY_NAMESPACE = "report-builder-platform"
 SECRET_PATTERNS = (
     re.compile(r"(?i)(?:password|pwd)\s*="),
     re.compile(r"(?i)(?:user\s*id|uid)\s*="),
@@ -281,12 +282,15 @@ def _tablix(component: dict[str, Any]) -> ET.Element:
     return tablix
 
 
-def generate_rdl(spec: dict[str, Any]) -> str:
+def generate_rdl(
+    spec: dict[str, Any], *, identity_namespace: str = DEFAULT_IDENTITY_NAMESPACE
+) -> str:
     validate_spec(spec)
+    identity_namespace = _require_nonempty(identity_namespace, "identity_namespace")
     report_cfg = spec["report"]
     datasource = spec["datasource"]
 
-    report_id = uuid.uuid5(uuid.NAMESPACE_URL, f"report-builder-platform:{report_cfg['name']}")
+    report_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{identity_namespace}:{report_cfg['name']}")
     root = ET.Element(_q("Report"), {"MustUnderstand": "df"})
 
     report_unit_type = ET.SubElement(root, _rd("ReportUnitType"))
@@ -307,7 +311,7 @@ def generate_rdl(spec: dict[str, Any]) -> str:
     _add(connection, "IntegratedSecurity", "true")
     datasource_id = uuid.uuid5(
         uuid.NAMESPACE_URL,
-        f"report-builder-platform:{report_cfg['name']}:datasource:{datasource['name']}",
+        f"{identity_namespace}:{report_cfg['name']}:datasource:{datasource['name']}",
     )
     datasource_id_node = ET.SubElement(source, _rd("DataSourceID"))
     datasource_id_node.text = str(datasource_id)
@@ -636,8 +640,10 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = _parser().parse_args()
+def main(
+    argv: list[str] | None = None, *, identity_namespace: str = DEFAULT_IDENTITY_NAMESPACE
+) -> int:
+    args = _parser().parse_args(argv)
     try:
         spec = load_spec(args.spec)
         validate_spec(spec)
@@ -645,7 +651,7 @@ def main() -> int:
             print(json.dumps({"status": "passed", "report": spec["report"]["name"]}, ensure_ascii=False))
             return 0
 
-        rdl = generate_rdl(spec)
+        rdl = generate_rdl(spec, identity_namespace=identity_namespace)
         validate_rdl(rdl, spec)
 
         if args.command == "generate":
