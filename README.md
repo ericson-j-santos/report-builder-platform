@@ -6,12 +6,23 @@ Reusable platform for declarative, deterministic paginated report generation (RD
 
 The platform owns the generic ReportSpec contract, validation, deterministic RDL generation, Fabric payload creation and optional provider integration. Consumer projects own domain-specific queries, schemas, credentials and environment authorization.
 
+## Installation
+
+```bash
+python -m pip install .
+```
+
 ## Quick start
 
 ```bash
+report-builder validate --spec examples/items_by_status.json
+report-builder generate --spec examples/items_by_status.json --output artifacts/ItemsByStatus.rdl
+```
+
+For development:
+
+```bash
 python -m pytest -q
-python -m report_builder.report_factory validate --spec examples/items_by_status.json
-python -m report_builder.report_factory generate --spec examples/items_by_status.json --output artifacts/ItemsByStatus.rdl
 ```
 
 ## Guardrails
