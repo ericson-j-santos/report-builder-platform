@@ -73,11 +73,11 @@ def _require_nonempty(value: Any, label: str) -> str:
 
 def _require_read_only_sql(value: Any, label: str) -> str:
     text = _require_nonempty(value, label)
-    normalized = re.sub(r"(?s)/\\*.*?\\*/|--[^\\n]*", " ", text).strip()
-    if not re.match(r"(?is)^(select\\b|with\\b)", normalized):
+    normalized = re.sub(r"(?s)/\*.*?\*/|--[^\n]*", " ", text).strip()
+    if not re.match(r"(?is)^(select\b|with\b)", normalized):
         raise ReportSpecError(f"{label} deve iniciar com SELECT ou WITH")
     forbidden = re.search(
-        r"(?is)\\b(insert|update|delete|merge|drop|alter|truncate|create|exec(?:ute)?|grant|revoke)\\b",
+        r"(?is)\b(insert|update|delete|merge|drop|alter|truncate|create|exec(?:ute)?|grant|revoke)\b",
         normalized,
     )
     if forbidden:
