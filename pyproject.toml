@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Reusable deterministic paginated report builder"
 requires-python = ">=3.11"
 
+[project.scripts]
+report-builder = "report_builder.report_factory:main"
+
 [project.optional-dependencies]
 yaml = ["PyYAML>=6.0"]
 
