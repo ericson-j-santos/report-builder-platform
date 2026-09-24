@@ -6,51 +6,97 @@ on:
       - main
       - "feat/**"
       - "fix/**"
+      - "hardening/**"
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: report-builder-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  quality:
+    name: Quality / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Detect project
-        id: project
-        shell: bash
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package and quality dependencies
         run: |
-          if [[ -f pyproject.toml ]]; then
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Bootstrap repository
-        if: steps.project.outputs.ready != 'true'
-        run: echo "Repository initialized; functional project not yet present on this ref."
-      - name: Install test dependency
-        if: steps.project.outputs.ready == 'true'
-        run: python -m pip install --disable-pip-version-check pytest build
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install ".[dev,yaml]"
+
+      - name: Lint
+        run: python -m ruff check .
+
       - name: Compile
-        if: steps.project.outputs.ready == 'true'
         run: python -m compileall -q src tests
-      - name: Test
-        if: steps.project.outputs.ready == 'true'
-        run: python -m pytest -q
+
+      - name: Test with branch coverage
+        run: |
+          python -m coverage run -m pytest -q
+          python -m coverage report
+
       - name: Build wheel
-        if: steps.project.outputs.ready == 'true'
         run: python -m build --wheel
+
       - name: Install built wheel
-        if: steps.project.outputs.ready == 'true'
-        run: python -m pip install --force-reinstall dist/*.whl
-      - name: Smoke installed CLI
-        if: steps.project.outputs.ready == 'true'
+        run: |
+          python -m pip install --force-reinstall dist/*.whl
+          python -m pip check
+
+      - name: E2E installed CLI positive and idempotency controls
         shell: bash
         run: |
+          set -euo pipefail
           cd /tmp
           report-builder validate --spec "$GITHUB_WORKSPACE/examples/items_by_status.json"
-          report-builder generate --spec "$GITHUB_WORKSPACE/examples/items_by_status.json" --output /tmp/ItemsByStatus.rdl
-          test -s /tmp/ItemsByStatus.rdl
+          report-builder generate --spec "$GITHUB_WORKSPACE/examples/items_by_status.json" --output /tmp/ItemsByStatus-1.rdl
+          report-builder generate --spec "$GITHUB_WORKSPACE/examples/items_by_status.json" --output /tmp/ItemsByStatus-2.rdl
+          test -s /tmp/ItemsByStatus-1.rdl
+          cmp /tmp/ItemsByStatus-1.rdl /tmp/ItemsByStatus-2.rdl
+
+      - name: E2E installed CLI negative control
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          source = json.loads(
+              Path("examples/items_by_status.json").read_text(encoding="utf-8")
+          )
+          source["datasets"][0]["query"] = (
+              "SELECT Status INTO dbo.ItemsCopy FROM dbo.Items"
+          )
+          Path("/tmp/invalid-report-spec.json").write_text(
+              json.dumps(source),
+              encoding="utf-8",
+          )
+          PY
+          if report-builder validate --spec /tmp/invalid-report-spec.json >/tmp/negative.out 2>/tmp/negative.err; then
+            echo "negative control unexpectedly succeeded"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path("/tmp/negative.out").read_text(encoding="utf-8"))
+          assert result["status"] == "failed"
+          assert result["message"].startswith("Falha ao processar")
+          PY
