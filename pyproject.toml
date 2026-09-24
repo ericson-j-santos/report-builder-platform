@@ -6,13 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "report-builder-platform"
 version = "0.1.0"
 description = "Reusable deterministic paginated report builder"
+readme = "README.md"
 requires-python = ">=3.11"
+keywords = ["reporting", "rdl", "microsoft-fabric", "paginated-reports"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
 
 [project.scripts]
 report-builder = "report_builder.report_factory:main"
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6.0"]
+dev = [
+  "build>=1.2",
+  "coverage[toml]>=7.6",
+  "pytest>=8.3",
+  "ruff>=0.9",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -20,3 +35,21 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+
+[tool.coverage.run]
+branch = true
+source = ["report_builder"]
+
+[tool.coverage.report]
+fail_under = 80
+precision = 1
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

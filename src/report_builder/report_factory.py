@@ -8,6 +8,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
@@ -72,14 +73,49 @@ def _require_nonempty(value: Any, label: str) -> str:
     return text
 
 
+def _require_uuid(value: Any, label: str) -> str:
+    text = _require_nonempty(value, label)
+    try:
+        parsed = uuid.UUID(text)
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ReportSpecError(f"{label} deve ser UUID válido") from exc
+    return str(parsed)
+
+
+def _require_fabric_operation_url(value: Any) -> str:
+    text = _require_nonempty(value, "Fabric operation URL")
+    parsed = urllib.parse.urlparse(text)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise FabricApiError("Fabric operation URL possui porta inválida") from exc
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "api.fabric.microsoft.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        raise FabricApiError("Fabric operation URL fora do host HTTPS permitido")
+    if not parsed.path.startswith("/v1/"):
+        raise FabricApiError("Fabric operation URL fora do caminho /v1 permitido")
+    return text
+
+
 def _require_read_only_sql(value: Any, label: str) -> str:
     text = _require_nonempty(value, label)
     normalized = re.sub(r"(?s)/\*.*?\*/|--[^\n]*", " ", text).strip()
-    if not re.match(r"(?is)^(select\b|with\b)", normalized):
+    statement = normalized
+    if statement.endswith(";"):
+        statement = statement[:-1].rstrip()
+    if ";" in statement:
+        raise ReportSpecError(f"{label} deve conter uma única instrução SQL")
+    if not re.match(r"(?is)^(select\b|with\b)", statement):
         raise ReportSpecError(f"{label} deve iniciar com SELECT ou WITH")
     forbidden = re.search(
-        r"(?is)\b(insert|update|delete|merge|drop|alter|truncate|create|exec(?:ute)?|grant|revoke)\b",
-        normalized,
+        r"(?is)\b(insert|into|update|delete|merge|drop|alter|truncate|create|exec(?:ute)?|"
+        r"grant|revoke|waitfor|dbcc|backup|restore|use|kill|shutdown|reconfigure)\b",
+        statement,
     )
     if forbidden:
         raise ReportSpecError(f"{label} contém comando não permitido: {forbidden.group(1)}")
@@ -558,11 +594,21 @@ def _request_json(method: str, url: str, token: str, payload: dict[str, Any] | N
             parsed = json.loads(raw.decode("utf-8")) if raw else None
             return response.status, dict(response.headers.items()), parsed
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
-        raise FabricApiError(f"Fabric HTTP {exc.code}: {raw[:2000]}") from exc
+        request_id = None
+        if exc.headers is not None:
+            request_id = (
+                exc.headers.get("x-ms-request-id")
+                or exc.headers.get("request-id")
+                or exc.headers.get("x-request-id")
+            )
+        suffix = f" (request_id={request_id})" if request_id else ""
+        raise FabricApiError(f"Fabric HTTP {exc.code}{suffix}") from exc
+    except urllib.error.URLError as exc:
+        raise FabricApiError("Falha de transporte ao chamar Fabric") from exc
 
 
 def _wait_lro(location: str, token: str, timeout_seconds: int = 300) -> Any:
+    location = _require_fabric_operation_url(location)
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         status, headers, body = _request_json("GET", location, token)
@@ -574,7 +620,11 @@ def _wait_lro(location: str, token: str, timeout_seconds: int = 300) -> Any:
                 return body
             if state in {"failed", "cancelled", "canceled"}:
                 raise FabricApiError(f"LRO terminou em {state}: {body}")
-        retry_after = int(headers.get("Retry-After", "2") or "2")
+        retry_after_raw = headers.get("Retry-After", "2") or "2"
+        try:
+            retry_after = int(retry_after_raw)
+        except (TypeError, ValueError):
+            retry_after = 2
         time.sleep(max(1, min(retry_after, 15)))
     raise FabricApiError(f"LRO excedeu timeout de {timeout_seconds}s")
 
@@ -588,8 +638,10 @@ def publish_to_fabric(
     report_id: str | None = None,
     timeout_seconds: int = 300,
 ) -> Any:
-    workspace_id = _require_nonempty(workspace_id, "workspace_id")
+    workspace_id = _require_uuid(workspace_id, "workspace_id")
     token = _require_nonempty(token, "FABRIC_ACCESS_TOKEN")
+    if report_id:
+        report_id = _require_uuid(report_id, "report_id")
     report = spec["report"]
     definition = build_fabric_definition(report["name"], rdl)
     if report_id:

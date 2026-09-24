@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import copy
+import io
 import json
+import urllib.error
 import uuid
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -236,3 +238,94 @@ def test_main_accepts_consumer_identity_namespace(tmp_path: Path) -> None:
         load_example(), identity_namespace="reqsys:report-factory"
     )
     assert generated == direct
+
+
+def test_read_only_sql_rejects_select_into_write() -> None:
+    source = load_example()
+    source["datasets"][0]["query"] = "SELECT Status INTO dbo.ItemsCopy FROM dbo.Items"
+
+    with pytest.raises(report_factory.ReportSpecError, match="não permitido: INTO|não permitido: into"):
+        report_factory.validate_spec(source)
+
+
+def test_read_only_sql_rejects_stacked_statements_even_when_first_is_select() -> None:
+    source = load_example()
+    source["datasets"][0]["query"] = "SELECT 1; WAITFOR DELAY '00:00:01'"
+
+    with pytest.raises(report_factory.ReportSpecError, match="única instrução SQL"):
+        report_factory.validate_spec(source)
+
+
+def test_read_only_sql_allows_single_trailing_semicolon() -> None:
+    source = load_example()
+    source["datasets"][0]["query"] = (
+        "SELECT Status, COUNT(*) AS ItemCount "
+        "FROM dbo.Items WHERE CreatedAt >= @StartDate GROUP BY Status;"
+    )
+
+    report_factory.validate_spec(source)
+
+
+def test_publish_rejects_non_uuid_workspace_before_network() -> None:
+    source = load_example()
+    rdl = report_factory.generate_rdl(source)
+
+    with pytest.raises(report_factory.ReportSpecError, match="workspace_id deve ser UUID válido"):
+        report_factory.publish_to_fabric(
+            source,
+            rdl,
+            workspace_id="not-a-workspace-guid",
+            token="runtime-token",
+        )
+
+
+def test_publish_rejects_non_uuid_report_id_before_network() -> None:
+    source = load_example()
+    rdl = report_factory.generate_rdl(source)
+
+    with pytest.raises(report_factory.ReportSpecError, match="report_id deve ser UUID válido"):
+        report_factory.publish_to_fabric(
+            source,
+            rdl,
+            workspace_id="11111111-1111-1111-1111-111111111111",
+            report_id="not-a-report-guid",
+            token="runtime-token",
+        )
+
+
+def test_wait_lro_rejects_cross_host_location_without_sending_token() -> None:
+    with pytest.raises(report_factory.FabricApiError, match="host HTTPS permitido"):
+        report_factory._wait_lro(
+            "https://attacker.example/v1/operations/123",
+            "must-not-leak",
+            timeout_seconds=1,
+        )
+
+
+def test_http_error_does_not_echo_response_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret_body = b'{"error":"client_secret=must-not-leak"}'
+    error = urllib.error.HTTPError(
+        url="https://api.fabric.microsoft.com/v1/workspaces",
+        code=400,
+        msg="Bad Request",
+        hdrs={"x-ms-request-id": "req-123"},
+        fp=io.BytesIO(secret_body),
+    )
+
+    def fail_request(*args: object, **kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(report_factory.urllib.request, "urlopen", fail_request)
+
+    with pytest.raises(report_factory.FabricApiError) as exc_info:
+        report_factory._request_json(
+            "GET",
+            "https://api.fabric.microsoft.com/v1/workspaces",
+            "runtime-token",
+        )
+
+    message = str(exc_info.value)
+    assert "Fabric HTTP 400" in message
+    assert "request_id=req-123" in message
+    assert "client_secret" not in message
+    assert "must-not-leak" not in message

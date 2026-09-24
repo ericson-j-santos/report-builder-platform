@@ -43,6 +43,33 @@ For development:
 python -m pytest -q
 ```
 
+## Quality baseline
+
+Every pull request is expected to pass the same evidence-driven baseline on Python 3.11 and 3.14:
+
+- Ruff linting;
+- bytecode compilation;
+- automated tests with branch coverage of at least 80%;
+- wheel build, installation and `pip check`;
+- installed-CLI positive E2E;
+- deterministic/idempotent repeated generation;
+- installed-CLI negative control proving write-capable SQL is rejected.
+
+GitHub Actions dependencies are pinned to immutable commit SHAs. Functional evidence is valid only for the exact current commit under review.
+
+## Security boundaries
+
+The generic platform is fail-closed:
+
+- accepted SQL is a single read-only `SELECT` or `WITH` statement;
+- write/admin SQL, including SQL Server `SELECT ... INTO`, is rejected;
+- Fabric workspace/report identifiers are validated before network activity;
+- bearer tokens are used only at runtime;
+- long-running-operation callbacks must remain on the HTTPS `api.fabric.microsoft.com/v1/` boundary;
+- upstream HTTP response bodies are not echoed into structured failures.
+
+Real Fabric publication is environment-specific and intentionally excluded from generic CI. Consumer projects own external authorization and runtime E2E evidence.
+
 ## Guardrails
 
 - SQL is read-only and must start with `SELECT` or `WITH`.
