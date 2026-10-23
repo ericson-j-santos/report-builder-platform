@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-from decimal import Decimal
 import json
 import os
 import re
@@ -13,6 +12,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 

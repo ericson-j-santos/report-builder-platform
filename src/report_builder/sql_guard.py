@@ -41,7 +41,7 @@ def assert_read_only_tsql(sql: Any) -> None:
         raise SqlSafetyError("deve conter consulta T-SQL não vazia")
     try:
         statements = parse(sql, read="tsql", error_level=ErrorLevel.RAISE)
-    except (SqlglotError, ValueError, TypeError) as exc:
+    except (SqlglotError, ValueError, TypeError):
         raise SqlSafetyError("possui sintaxe T-SQL não comprovadamente segura") from None
     if len(statements) != 1 or statements[0] is None:
         raise SqlSafetyError("deve conter uma única instrução SQL")
