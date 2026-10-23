@@ -254,7 +254,7 @@ def validate_spec(spec: dict[str, Any]) -> None:
             raise ReportSpecError(f"component {name}: largura ultrapassa a página imprimível")
 
 
-_LENGTH = re.compile(r"^(\\d+(?:\\.\\d+)?)(in|cm|mm|pt)$")
+_LENGTH = re.compile(r"^(\d+(?:\.\d+)?)(in|cm|mm|pt)$")
 _INCH_FACTORS = {
     "in": Decimal("1"),
     "cm": Decimal("1") / Decimal("2.54"),
