@@ -86,3 +86,9 @@ No Fabric mutation or security-role change is authorized by this probe.
 No host, identity, DSN or real SQL Server session has been verified by
 the library CI; environment-specific SQL E2E remains blocked until
 the existing governed runtime is available and validated.
+
+Installed-wheel CI additionally runs the `sql-preflight` command outside the
+source tree with **no DSN and no Fabric token**, requiring a structured blocked
+result. This prevents a CLI packaging regression from silently bypassing the
+unconfigured-database safety gate; the unit tests exercise the fake
+connection path. Neither test substitutes for a real SQL Server.

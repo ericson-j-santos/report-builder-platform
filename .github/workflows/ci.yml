@@ -99,3 +99,23 @@ jobs:
           assert result["status"] == "failed"
           assert result["message"].startswith("Falha ao processar")
           PY
+
+      - name: E2E installed SQL preflight negative control (no DSN, no Fabric)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset REPORT_BUILDER_READ_ONLY_DSN FABRIC_ACCESS_TOKEN
+          cd /tmp
+          if report-builder sql-preflight --spec "$GITHUB_WORKSPACE/examples/items_by_status.json" >/tmp/sql-preflight-negative.out 2>/tmp/sql-preflight-negative.err; then
+            echo "SQL preflight unexpectedly accepted an unconfigured DSN"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path("/tmp/sql-preflight-negative.out").read_text(encoding="utf-8"))
+          assert result["status"] == "failed"
+          assert result["message"].startswith("Falha ao processar")
+          assert "sql_effective_permissions_read_only" not in result
+          PY
