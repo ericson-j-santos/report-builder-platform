@@ -263,13 +263,13 @@ _INCH_FACTORS = {
 }
 
 
-def _inches(value: Any, label: str) -> Decimal:
+def _inches(value: Any, label: str, *, allow_zero: bool = False) -> Decimal:
     text = str(value or "")
     match = _LENGTH.fullmatch(text) if len(text) <= 32 else None
     if not match:
         raise ReportSpecError(f"{label}: medida inválida")
     width = Decimal(match.group(1)) * _INCH_FACTORS[match.group(2)]
-    if width <= 0 or width > Decimal("1000"):
+    if width < 0 or (width == 0 and not allow_zero) or width > Decimal("1000"):
         raise ReportSpecError(f"{label}: medida fora dos limites")
     return width
 
@@ -627,7 +627,7 @@ def _validate_rdl_geometry(root: ET.Element, spec: dict[str, Any]) -> None:
             Decimal("0"),
         )
         rdl_total = _inches(table.findtext(_q("Width")), "Tablix.Width")
-        left = _inches(table.findtext(_q("Left"), default="0in"), "Tablix.Left")
+        left = _inches(table.findtext(_q("Left"), default="0in"), "Tablix.Left", allow_zero=True)
         if abs(rdl_total - total) > Decimal("0.000002") or left + rdl_total > expected_inner + Decimal("0.000002"):
             raise ReportSpecError("RDL tabela possui geometria inconsistente ou excede página")
 

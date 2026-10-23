@@ -253,3 +253,11 @@ def test_rdl_rejects_tampered_column_width() -> None:
     width.text = "1cm"
     with pytest.raises(report_factory.ReportSpecError, match="coluna possui largura divergente"):
         report_factory.validate_rdl(ET.tostring(root, encoding="unicode"), source)
+
+def test_position_zero_is_valid_but_width_zero_is_not() -> None:
+    source = load_example()
+    rdl = report_factory.generate_rdl(source)
+    report_factory.validate_rdl(rdl, source)  # Tablix.Left = 0in is valid
+    assert report_factory._inches("0in", "Left", allow_zero=True) == 0
+    with pytest.raises(report_factory.ReportSpecError):
+        report_factory._inches("0in", "Width")
