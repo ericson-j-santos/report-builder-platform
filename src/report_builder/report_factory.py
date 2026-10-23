@@ -12,8 +12,12 @@ import urllib.parse
 import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+from .db_permissions import SqlPermissionError, verify_read_only_connection
+from .sql_guard import SqlSafetyError, assert_read_only_tsql
 
 RDL_NS = "http://schemas.microsoft.com/sqlserver/reporting/2016/01/reportdefinition"
 RD_NS = "http://schemas.microsoft.com/SQLServer/reporting/reportdesigner"
@@ -104,21 +108,10 @@ def _require_fabric_operation_url(value: Any) -> str:
 
 def _require_read_only_sql(value: Any, label: str) -> str:
     text = _require_nonempty(value, label)
-    normalized = re.sub(r"(?s)/\*.*?\*/|--[^\n]*", " ", text).strip()
-    statement = normalized
-    if statement.endswith(";"):
-        statement = statement[:-1].rstrip()
-    if ";" in statement:
-        raise ReportSpecError(f"{label} deve conter uma única instrução SQL")
-    if not re.match(r"(?is)^(select\b|with\b)", statement):
-        raise ReportSpecError(f"{label} deve iniciar com SELECT ou WITH")
-    forbidden = re.search(
-        r"(?is)\b(insert|into|update|delete|merge|drop|alter|truncate|create|exec(?:ute)?|"
-        r"grant|revoke|waitfor|dbcc|backup|restore|use|kill|shutdown|reconfigure)\b",
-        statement,
-    )
-    if forbidden:
-        raise ReportSpecError(f"{label} contém comando não permitido: {forbidden.group(1)}")
+    try:
+        assert_read_only_tsql(text)
+    except SqlSafetyError as exc:
+        raise ReportSpecError(f"{label} {exc}") from None
     return text
 
 
@@ -174,6 +167,11 @@ def validate_spec(spec: dict[str, Any]) -> None:
             raise ReportSpecError("datasource.connect_string não pode conter credenciais ou segredos")
     if datasource.get("integrated_security") is not True:
         raise ReportSpecError("MVP exige datasource.integrated_security=true")
+
+    page = report.get("page", {})
+    if not isinstance(page, dict) or page.get("orientation", "portrait") not in {"portrait", "landscape"}:
+        raise ReportSpecError("report.page.orientation deve ser portrait ou landscape")
+    max_width = Decimal("10") if page.get("orientation") == "landscape" else Decimal("7.5")
 
     parameters = spec.get("parameters", [])
     if not isinstance(parameters, list):
@@ -242,6 +240,7 @@ def validate_spec(spec: dict[str, Any]) -> None:
         columns = component.get("columns")
         if not isinstance(columns, list) or not columns:
             raise ReportSpecError(f"component {name}: columns deve conter ao menos um item")
+        component_width = Decimal("0")
         for column in columns:
             if not isinstance(column, dict):
                 raise ReportSpecError(f"component {name}: coluna inválida")
@@ -250,8 +249,38 @@ def validate_spec(spec: dict[str, Any]) -> None:
                 raise ReportSpecError(f"component {name}: field inexistente {field_name}")
             _require_nonempty(column.get("title", field_name), f"component {name}.{field_name}.title")
             width = _require_nonempty(column.get("width", "2in"), f"component {name}.{field_name}.width")
-            if not re.fullmatch(r"\d+(?:\.\d+)?(?:in|cm|mm|pt)", width):
-                raise ReportSpecError(f"component {name}: width inválido {width!r}")
+            component_width += _inches(width, f"component {name}.width")
+        if component_width > max_width:
+            raise ReportSpecError(f"component {name}: largura ultrapassa a página imprimível")
+
+
+_LENGTH = re.compile(r"^(\d+(?:\.\d+)?)(in|cm|mm|pt)$")
+_INCH_FACTORS = {
+    "in": Decimal("1"),
+    "cm": Decimal("1") / Decimal("2.54"),
+    "mm": Decimal("1") / Decimal("25.4"),
+    "pt": Decimal("1") / Decimal("72"),
+}
+
+
+def _inches(value: Any, label: str, *, allow_zero: bool = False) -> Decimal:
+    text = str(value or "")
+    match = _LENGTH.fullmatch(text) if len(text) <= 32 else None
+    if not match:
+        raise ReportSpecError(f"{label}: medida inválida")
+    width = Decimal(match.group(1)) * _INCH_FACTORS[match.group(2)]
+    if width < 0 or (width == 0 and not allow_zero) or width > Decimal("1000"):
+        raise ReportSpecError(f"{label}: medida fora dos limites")
+    return width
+
+
+def _inches_text(value: Decimal) -> str:
+    return f"{value.quantize(Decimal('0.000001')).normalize():f}in"
+
+
+def _page_width(report: dict[str, Any]) -> Decimal:
+    page = report.get("page", {})
+    return Decimal("10") if page.get("orientation", "portrait") == "landscape" else Decimal("7.5")
 
 
 def _textbox(name: str, value: str, *, bold: bool = False) -> ET.Element:
@@ -312,8 +341,8 @@ def _tablix(component: dict[str, Any]) -> ET.Element:
     _add(tablix, "Top", "0.5in")
     _add(tablix, "Left", "0in")
     _add(tablix, "Height", "0.52in")
-    total_width = sum(float(re.match(r"\d+(?:\.\d+)?", c.get("width", "2in")).group(0)) for c in columns)
-    _add(tablix, "Width", f"{total_width:g}in")
+    total_width = sum((_inches(c.get("width", "2in"), "tablix.Width") for c in columns), Decimal("0"))
+    _add(tablix, "Width", _inches_text(total_width))
     _add(tablix, "Style")
     return tablix
 
@@ -391,7 +420,7 @@ def generate_rdl(
     _add(title, "Top", "0in")
     _add(title, "Left", "0in")
     _add(title, "Height", "0.35in")
-    _add(title, "Width", "8in")
+    _add(title, "Width", _inches_text(_page_width(report_cfg)))
     report_items.append(title)
 
     top = 0.5
@@ -414,7 +443,7 @@ def generate_rdl(
     for margin in ("LeftMargin", "RightMargin", "TopMargin", "BottomMargin"):
         _add(page, margin, "0.5in")
     _add(page, "Style")
-    _add(section, "Width", "10in" if landscape else "7.5in")
+    _add(section, "Width", _inches_text(_page_width(report_cfg)))
 
     if parameters:
         parameter_layout = _add(root, "ReportParametersLayout")
@@ -548,6 +577,60 @@ def validate_rdl(rdl: str, spec: dict[str, Any]) -> None:
     elif report_parameters is not None or parameter_layout is not None:
         raise ReportSpecError("RDL sem parâmetros não deve declarar layout de parâmetros")
 
+    _validate_rdl_geometry(root, spec)
+
+
+def _validate_rdl_geometry(root: ET.Element, spec: dict[str, Any]) -> None:
+    """Independently verify RDL dimensions, including mixed-unit tablix columns."""
+    section = root.find(f"{_q('ReportSections')}/{_q('ReportSection')}")
+    if section is None:
+        raise ReportSpecError("RDL não contém ReportSection")
+    page = section.find(_q("Page"))
+    if page is None:
+        raise ReportSpecError("RDL não contém Page")
+    expected_inner = _page_width(spec["report"])
+    expected_page = expected_inner + Decimal("1")
+    if _inches(page.findtext(_q("PageWidth")), "PageWidth") != expected_page:
+        raise ReportSpecError("RDL PageWidth diverge da orientação configurada")
+    for margin in ("LeftMargin", "RightMargin", "TopMargin", "BottomMargin"):
+        if _inches(page.findtext(_q(margin)), margin) != Decimal("0.5"):
+            raise ReportSpecError(f"RDL {margin} diverge da margem contratada")
+    if _inches(section.findtext(_q("Width")), "ReportSection.Width") != expected_inner:
+        raise ReportSpecError("RDL ReportSection.Width diverge da área imprimível")
+
+    items = section.find(f"{_q('Body')}/{_q('ReportItems')}")
+    if items is None:
+        raise ReportSpecError("RDL sem ReportItems")
+    title = [box for box in items.findall(_q("Textbox")) if box.attrib.get("Name") == "ReportTitle"]
+    if len(title) != 1 or _inches(title[0].findtext(_q("Width")), "ReportTitle.Width") != expected_inner:
+        raise ReportSpecError("RDL título excede ou diverge da área imprimível")
+
+    for component in spec["components"]:
+        tables = [
+            item for item in items.findall(_q("Tablix"))
+            if item.attrib.get("Name") == component["name"]
+        ]
+        if len(tables) != 1:
+            raise ReportSpecError("RDL contém tabela ausente ou duplicada")
+        table = tables[0]
+        rdl_columns = table.findall(f"{_q('TablixBody')}/{_q('TablixColumns')}/{_q('TablixColumn')}")
+        expected_columns = component["columns"]
+        if len(rdl_columns) != len(expected_columns):
+            raise ReportSpecError("RDL TablixColumns diverge da especificação")
+        for actual, expected in zip(rdl_columns, expected_columns):
+            actual_width = _inches(actual.findtext(_q("Width")), "TablixColumn.Width")
+            expected_width = _inches(expected.get("width", "2in"), "component.width")
+            if abs(actual_width - expected_width) > Decimal("0.000002"):
+                raise ReportSpecError("RDL coluna possui largura divergente")
+        total = sum(
+            (_inches(c.get("width", "2in"), "component.width") for c in expected_columns),
+            Decimal("0"),
+        )
+        rdl_total = _inches(table.findtext(_q("Width")), "Tablix.Width")
+        left = _inches(table.findtext(_q("Left"), default="0in"), "Tablix.Left", allow_zero=True)
+        if abs(rdl_total - total) > Decimal("0.000002") or left + rdl_total > expected_inner + Decimal("0.000002"):
+            raise ReportSpecError("RDL tabela possui geometria inconsistente ou excede página")
+
 
 def build_fabric_definition(display_name: str, rdl: str) -> dict[str, Any]:
     display_name = _require_nonempty(display_name, "display_name")
@@ -637,11 +720,17 @@ def publish_to_fabric(
     token: str,
     report_id: str | None = None,
     timeout_seconds: int = 300,
+    sql_connection: Any = None,
 ) -> Any:
     workspace_id = _require_uuid(workspace_id, "workspace_id")
     token = _require_nonempty(token, "FABRIC_ACCESS_TOKEN")
     if report_id:
         report_id = _require_uuid(report_id, "report_id")
+    validate_rdl(rdl, spec)  # both CREATE and UPDATE must validate before network
+    try:
+        verify_read_only_connection(sql_connection, spec["datasource"]["connect_string"])
+    except SqlPermissionError as exc:
+        raise ReportSpecError(str(exc)) from None
     report = spec["report"]
     definition = build_fabric_definition(report["name"], rdl)
     if report_id:
@@ -668,12 +757,36 @@ def _write_text(path: str | Path, content: str) -> None:
     output.write_text(content, encoding="utf-8", newline="\n")
 
 
+def _open_sql_server_read_only() -> Any:
+    """Open only a named, preconfigured integrated-security DSN (no inline secrets)."""
+    dsn = os.getenv("REPORT_BUILDER_READ_ONLY_DSN", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dsn):
+        raise ReportSpecError("pré-verificação SQL exige REPORT_BUILDER_READ_ONLY_DSN válido")
+    try:
+        import pyodbc
+    except ImportError:
+        raise ReportSpecError("pré-verificação SQL exige dependência opcional pyodbc (extra mssql)") from None
+    try:
+        return pyodbc.connect(
+            f"DSN={dsn};Trusted_Connection=Yes;ApplicationIntent=ReadOnly",
+            timeout=10,
+            autocommit=False,
+        )
+    except Exception:
+        raise ReportSpecError("não foi possível abrir conexão SQL Server verificada") from None
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Report Builder Platform: ReportSpec -> RDL -> Fabric API")
     sub = parser.add_subparsers(dest="command", required=True)
 
     validate = sub.add_parser("validate", help="valida a especificação sem produzir artefato")
     validate.add_argument("--spec", required=True)
+
+    sql_preflight = sub.add_parser(
+        "sql-preflight", help="confere servidor/banco e privilégios SQL sem acessar o Fabric"
+    )
+    sql_preflight.add_argument("--spec", required=True)
 
     generate = sub.add_parser("generate", help="gera RDL determinístico")
     generate.add_argument("--spec", required=True)
@@ -703,6 +816,25 @@ def main(
             print(json.dumps({"status": "passed", "report": spec["report"]["name"]}, ensure_ascii=False))
             return 0
 
+        if args.command == "sql-preflight":
+            connection = _open_sql_server_read_only()
+            try:
+                try:
+                    verify_read_only_connection(connection, spec["datasource"]["connect_string"])
+                except SqlPermissionError as exc:
+                    raise ReportSpecError(str(exc)) from None
+            finally:
+                connection.close()
+            print(json.dumps({
+                "status": "passed",
+                "sql_server_database_match": True,
+                "sql_effective_permissions_read_only": True,
+                "fabric_gateway_identity_verified": False,
+                "fabric_mutations_performed": False,
+                "external_e2e_verified": False,
+            }, ensure_ascii=False, sort_keys=True))
+            return 0
+
         rdl = generate_rdl(spec, identity_namespace=identity_namespace)
         validate_rdl(rdl, spec)
 
@@ -718,14 +850,19 @@ def main(
             return 0
 
         token = os.getenv("FABRIC_ACCESS_TOKEN", "")
-        result = publish_to_fabric(
-            spec,
-            rdl,
-            workspace_id=args.workspace_id,
-            token=token,
-            report_id=args.report_id,
-            timeout_seconds=args.timeout_seconds,
-        )
+        connection = _open_sql_server_read_only()
+        try:
+            result = publish_to_fabric(
+                spec,
+                rdl,
+                workspace_id=args.workspace_id,
+                token=token,
+                report_id=args.report_id,
+                timeout_seconds=args.timeout_seconds,
+                sql_connection=connection,
+            )
+        finally:
+            connection.close()
         print(json.dumps({"status": "passed", "fabric": result}, ensure_ascii=False))
         return 0
     except (ReportSpecError, FabricApiError, OSError, json.JSONDecodeError) as exc:

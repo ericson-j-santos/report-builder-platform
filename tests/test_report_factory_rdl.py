@@ -252,7 +252,7 @@ def test_read_only_sql_rejects_stacked_statements_even_when_first_is_select() ->
     source = load_example()
     source["datasets"][0]["query"] = "SELECT 1; WAITFOR DELAY '00:00:01'"
 
-    with pytest.raises(report_factory.ReportSpecError, match="única instrução SQL"):
+    with pytest.raises(report_factory.ReportSpecError, match="única instrução SQL|sintaxe T-SQL"):
         report_factory.validate_spec(source)
 
 
