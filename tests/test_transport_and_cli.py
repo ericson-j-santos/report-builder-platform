@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from types import SimpleNamespace
 import urllib.error
 from pathlib import Path
 from typing import Any
@@ -81,6 +83,25 @@ def test_fabric_operation_url_allowlist_accepts_only_expected_boundary() -> None
         report_factory._require_fabric_operation_url(
             "https://api.fabric.microsoft.com:not-a-port/v1/operations/abc"
         )
+
+
+class _ReadOnlyCursor:
+    def execute(self, statement: str) -> None:
+        self.query = statement
+
+    def fetchone(self) -> tuple[str | int, ...]:
+        return ("ExampleDb", "report_reader", 0, 0, 0, 0, 0, 0, 0)
+
+    def close(self) -> None:
+        return None
+
+
+class _ReadOnlyConnection:
+    def cursor(self) -> _ReadOnlyCursor:
+        return _ReadOnlyCursor()
+
+    def close(self) -> None:
+        return None
 
 
 class _FakeResponse:
@@ -250,6 +271,7 @@ def test_publish_create_and_update_use_expected_fabric_urls(
         source,
         rdl,
         workspace_id=WORKSPACE_ID,
+            sql_connection=_ReadOnlyConnection(),
         token="runtime-token",
     )
     assert created == {"id": "created"}
@@ -274,6 +296,7 @@ def test_publish_create_and_update_use_expected_fabric_urls(
         source,
         rdl,
         workspace_id=WORKSPACE_ID,
+            sql_connection=_ReadOnlyConnection(),
         report_id=REPORT_ID,
         token="runtime-token",
     )
@@ -300,6 +323,7 @@ def test_publish_202_requires_location_and_delegates_lro(
             source,
             rdl,
             workspace_id=WORKSPACE_ID,
+            sql_connection=_ReadOnlyConnection(),
             token="runtime-token",
         )
 
@@ -322,6 +346,7 @@ def test_publish_202_requires_location_and_delegates_lro(
         source,
         rdl,
         workspace_id=WORKSPACE_ID,
+            sql_connection=_ReadOnlyConnection(),
         token="runtime-token",
         timeout_seconds=17,
     )
@@ -350,6 +375,7 @@ def test_publish_rejects_unexpected_http_status(
             source,
             rdl,
             workspace_id=WORKSPACE_ID,
+            sql_connection=_ReadOnlyConnection(),
             token="runtime-token",
         )
 
@@ -391,7 +417,9 @@ def test_cli_publish_uses_runtime_token_without_real_network(
         token: str,
         report_id: str | None = None,
         timeout_seconds: int = 300,
+        sql_connection: Any = None,
     ) -> Any:
+        assert isinstance(sql_connection, _ReadOnlyConnection)
         captured.update(
             {
                 "report": spec["report"]["name"],
@@ -405,6 +433,12 @@ def test_cli_publish_uses_runtime_token_without_real_network(
         return {"id": "fabric-report"}
 
     monkeypatch.setenv("FABRIC_ACCESS_TOKEN", "runtime-token")
+    monkeypatch.setenv("REPORT_BUILDER_READ_ONLY_DSN", "ReportingReader")
+    monkeypatch.setitem(
+        sys.modules,
+        "pyodbc",
+        SimpleNamespace(connect=lambda *args, **kwargs: _ReadOnlyConnection()),
+    )
     monkeypatch.setattr(report_factory, "publish_to_fabric", fake_publish)
 
     rc = report_factory.main(
@@ -451,3 +485,20 @@ def test_cli_failure_returns_generic_structured_error(
     assert output["message"].startswith("Falha ao processar")
     assert output["error_id"] in captured.err
     assert "client_secret=must-not-leak" not in captured.out
+
+def test_cli_publish_rejects_missing_readonly_dsn_before_provider_network(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("REPORT_BUILDER_READ_ONLY_DSN", raising=False)
+    monkeypatch.setenv("FABRIC_ACCESS_TOKEN", "runtime-token")
+    called = []
+    monkeypatch.setattr(
+        report_factory, "_request_json",
+        lambda *args, **kwargs: called.append(args),
+    )
+    assert report_factory.main(
+        ["publish", "--spec", str(SPEC_PATH), "--workspace-id", WORKSPACE_ID]
+    ) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+    assert not called
