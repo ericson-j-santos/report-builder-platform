@@ -26,8 +26,11 @@ ApplicationIntent=ReadOnly are not substitutes for ACLs.
 The API `publish_to_fabric(..., sql_connection=...)` now fails closed without
 a live SQL Server DB-API connection. Immediately before Fabric network mutation
 it queries effective server/database/schema/object permissions under this
-connection, fails closed for rights beyond read-only, and verifies the database
-matches the ReportSpec's Initial Catalog/Database field. This is a **preflight
+connection, fails closed for rights beyond read-only, and verifies **both**
+the exact SQL Server instance reported by SERVERPROPERTY(ServerName) and the
+database against ReportSpec's Data Source/Server and Initial Catalog/Database.
+Aliases, hostnames and instance aliases must match the registered instance
+name exactly; any ambiguity is deliberately blocked. This is a **preflight
 control**, not a proof that Fabric's gateway uses the same principal.
 
 The CLI `publish` requires a trusted ODBC DSN name in
@@ -58,3 +61,28 @@ RDL geometry is checked **on both create and update before any Fabric request**.
 
 This release is not proof of Fabric rendering/export/email delivery, which
 require a separately authorized real DEV integration test.
+
+
+### Standalone DEV read-only probe
+
+The installed CLI supports `report-builder sql-preflight --spec <ReportSpec.json>`.
+This command uses the same integrated-security DSN and permission checks as
+`publish`, but needs **no Fabric token** and performs **no Fabric API calls**.
+It reports only booleans, not server names, login names, database identities
+or connection strings. Repeating it is read-only and idempotent.
+
+Passing this check **does not** confirm the principal configured in Fabric's
+gateway. To validate that separate gate, first use the official Power BI
+REST `Get Datasources In Group` (paginated report -> gatewayId/datasourceId),
+then `Gateways - Get Datasource` to confirm server/database and credential
+type, with the permissions required by Microsoft. A gateway datasource's
+user-access list does not reveal the SQL Server login actually executing
+the query. Only a separately authorized DEV report rendering a controlled
+`ORIGINAL_LOGIN()/USER_NAME()/DB_NAME()/SERVERPROPERTY()` diagnostic,
+followed by independent export/readback and restricted-permission negative
+control, can attest that effective SQL identity end to end.
+
+No Fabric mutation or security-role change is authorized by this probe.
+No host, identity, DSN or real SQL Server session has been verified by
+the library CI; environment-specific SQL E2E remains blocked until
+the existing governed runtime is available and validated.

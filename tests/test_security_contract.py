@@ -44,7 +44,7 @@ class FakeCursor:
 class FakeReadOnlyConnection:
     def __init__(self, row: tuple[Any, ...] | None = None, *, fail: bool = False) -> None:
         self.cursor_instance = FakeCursor(
-            row if row is not None else ("ExampleDb", "report_reader", 0, 0, 0, 0, 0, 0, 0),
+            row if row is not None else ("ExampleDb", "report_reader", "localhost", 0, 0, 0, 0, 0, 0, 0),
             fail=fail,
         )
 
@@ -124,12 +124,12 @@ def test_connection_requires_actual_effective_read_only_proof() -> None:
     "connection,connect_string",
     [
         (None, "Data Source=localhost;Initial Catalog=ExampleDb"),
-        (FakeReadOnlyConnection(("OtherDb", "reader", 0, 0, 0, 0, 0, 0, 0)), "Initial Catalog=ExampleDb"),
-        (FakeReadOnlyConnection(("ExampleDb", "admin", 1, 0, 0, 0, 0, 0, 0)), "Initial Catalog=ExampleDb"),
-        (FakeReadOnlyConnection(("ExampleDb", "writer", 0, 0, 0, 0, 0, 0, 2)), "Initial Catalog=ExampleDb"),
-        (FakeReadOnlyConnection(("ExampleDb", "unknown", None, 0, 0, 0, 0, 0, 0)), "Initial Catalog=ExampleDb"),
-        (FakeReadOnlyConnection(("ExampleDb", "reader", 0, 0, 0, 0, 0, 0, 0)), "Data Source=localhost"),
-        (FakeReadOnlyConnection(fail=True), "Initial Catalog=ExampleDb"),
+        (FakeReadOnlyConnection(("OtherDb", "reader", "localhost", 0, 0, 0, 0, 0, 0, 0)), "Data Source=localhost;Initial Catalog=ExampleDb"),
+        (FakeReadOnlyConnection(("ExampleDb", "admin", "localhost", 1, 0, 0, 0, 0, 0, 0)), "Data Source=localhost;Initial Catalog=ExampleDb"),
+        (FakeReadOnlyConnection(("ExampleDb", "writer", "localhost", 0, 0, 0, 0, 0, 0, 2)), "Data Source=localhost;Initial Catalog=ExampleDb"),
+        (FakeReadOnlyConnection(("ExampleDb", "unknown", "localhost", None, 0, 0, 0, 0, 0, 0)), "Data Source=localhost;Initial Catalog=ExampleDb"),
+        (FakeReadOnlyConnection(("ExampleDb", "reader", "localhost", 0, 0, 0, 0, 0, 0, 0)), "Data Source=localhost"),
+        (FakeReadOnlyConnection(fail=True), "Data Source=localhost;Initial Catalog=ExampleDb"),
     ],
 )
 def test_connection_rejects_unverified_or_write_capable_permissions(
@@ -261,3 +261,22 @@ def test_position_zero_is_valid_but_width_zero_is_not() -> None:
     assert report_factory._inches("0in", "Left", allow_zero=True) == 0
     with pytest.raises(report_factory.ReportSpecError):
         report_factory._inches("0in", "Width")
+
+
+def test_sql_instance_mismatch_is_blocked_even_if_database_matches() -> None:
+    spec = load_example()
+    mismatch = FakeReadOnlyConnection(
+        ("ExampleDb", "report_reader", "OTHER-SERVER", 0, 0, 0, 0, 0, 0, 0)
+    )
+    with pytest.raises(SqlPermissionError, match="instância diferente"):
+        verify_read_only_connection(mismatch, spec["datasource"]["connect_string"])
+    assert mismatch.cursor_instance.closed
+
+
+def test_sql_instance_absent_is_blocked() -> None:
+    source = load_example()
+    missing = FakeReadOnlyConnection(
+        ("ExampleDb", "report_reader", None, 0, 0, 0, 0, 0, 0, 0)
+    )
+    with pytest.raises(SqlPermissionError, match="instância diferente"):
+        verify_read_only_connection(missing, source["datasource"]["connect_string"])

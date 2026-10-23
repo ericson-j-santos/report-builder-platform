@@ -19,6 +19,7 @@ _PERMISSION_QUERY = """
 SELECT
   DB_NAME(),
   USER_NAME(),
+  CONVERT(nvarchar(128), SERVERPROPERTY(N'ServerName')),
   IS_SRVROLEMEMBER(N'sysadmin'),
   IS_MEMBER(N'db_owner'),
   IS_MEMBER(N'db_datawriter'),
@@ -65,8 +66,9 @@ def verify_read_only_connection(connection: Any, connect_string: str) -> None:
         if sep:
             entries[key.strip().lower()] = value.strip()
     expected_database = entries.get("initial catalog") or entries.get("database")
-    if not expected_database:
-        raise SqlPermissionError("publicação exige banco definido em datasource.connect_string")
+    expected_server = entries.get("data source") or entries.get("server")
+    if not expected_database or not expected_server:
+        raise SqlPermissionError("publicação exige servidor e banco definidos em datasource.connect_string")
     cursor = None
     try:
         cursor = connection.cursor()
@@ -82,12 +84,14 @@ def verify_read_only_connection(connection: Any, connect_string: str) -> None:
             except Exception:
                 pass
 
-    if result is None or len(result) != 9:
+    if result is None or len(result) != 10:
         raise SqlPermissionError("SQL Server não retornou prova completa de permissões")
-    database_name, principal_name, *permission_flags = result
+    database_name, principal_name, actual_server, *permission_flags = result
     if not isinstance(database_name, str) or database_name.casefold() != expected_database.casefold():
         raise SqlPermissionError("conexão SQL Server aponta para banco diferente da especificação")
     if not isinstance(principal_name, str) or not principal_name.strip():
         raise SqlPermissionError("não foi possível identificar o principal SQL Server")
+    if not isinstance(actual_server, str) or actual_server.strip().casefold() != expected_server.casefold():
+        raise SqlPermissionError("conexão SQL Server aponta para instância diferente da especificação")
     if any(type(value) is not int or value != 0 for value in permission_flags):
         raise SqlPermissionError("principal SQL Server possui permissões além de leitura ou não verificáveis")

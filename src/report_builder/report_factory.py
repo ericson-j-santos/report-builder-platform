@@ -757,12 +757,36 @@ def _write_text(path: str | Path, content: str) -> None:
     output.write_text(content, encoding="utf-8", newline="\n")
 
 
+def _open_sql_server_read_only() -> Any:
+    """Open only a named, preconfigured integrated-security DSN (no inline secrets)."""
+    dsn = os.getenv("REPORT_BUILDER_READ_ONLY_DSN", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dsn):
+        raise ReportSpecError("pré-verificação SQL exige REPORT_BUILDER_READ_ONLY_DSN válido")
+    try:
+        import pyodbc
+    except ImportError:
+        raise ReportSpecError("pré-verificação SQL exige dependência opcional pyodbc (extra mssql)") from None
+    try:
+        return pyodbc.connect(
+            f"DSN={dsn};Trusted_Connection=Yes;ApplicationIntent=ReadOnly",
+            timeout=10,
+            autocommit=False,
+        )
+    except Exception:
+        raise ReportSpecError("não foi possível abrir conexão SQL Server verificada") from None
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Report Builder Platform: ReportSpec -> RDL -> Fabric API")
     sub = parser.add_subparsers(dest="command", required=True)
 
     validate = sub.add_parser("validate", help="valida a especificação sem produzir artefato")
     validate.add_argument("--spec", required=True)
+
+    sql_preflight = sub.add_parser(
+        "sql-preflight", help="confere servidor/banco e privilégios SQL sem acessar o Fabric"
+    )
+    sql_preflight.add_argument("--spec", required=True)
 
     generate = sub.add_parser("generate", help="gera RDL determinístico")
     generate.add_argument("--spec", required=True)
@@ -792,6 +816,25 @@ def main(
             print(json.dumps({"status": "passed", "report": spec["report"]["name"]}, ensure_ascii=False))
             return 0
 
+        if args.command == "sql-preflight":
+            connection = _open_sql_server_read_only()
+            try:
+                try:
+                    verify_read_only_connection(connection, spec["datasource"]["connect_string"])
+                except SqlPermissionError as exc:
+                    raise ReportSpecError(str(exc)) from None
+            finally:
+                connection.close()
+            print(json.dumps({
+                "status": "passed",
+                "sql_server_database_match": True,
+                "sql_effective_permissions_read_only": True,
+                "fabric_gateway_identity_verified": False,
+                "fabric_mutations_performed": False,
+                "external_e2e_verified": False,
+            }, ensure_ascii=False, sort_keys=True))
+            return 0
+
         rdl = generate_rdl(spec, identity_namespace=identity_namespace)
         validate_rdl(rdl, spec)
 
@@ -807,21 +850,7 @@ def main(
             return 0
 
         token = os.getenv("FABRIC_ACCESS_TOKEN", "")
-        dsn = os.getenv("REPORT_BUILDER_READ_ONLY_DSN", "")
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", dsn):
-            raise ReportSpecError("publicação exige REPORT_BUILDER_READ_ONLY_DSN válido")
-        try:
-            import pyodbc
-        except ImportError:
-            raise ReportSpecError("publicação exige dependência opcional pyodbc (extra mssql)") from None
-        try:
-            connection = pyodbc.connect(
-                f"DSN={dsn};Trusted_Connection=Yes;ApplicationIntent=ReadOnly",
-                timeout=10,
-                autocommit=False,
-            )
-        except Exception:
-            raise ReportSpecError("não foi possível abrir conexão SQL Server verificada") from None
+        connection = _open_sql_server_read_only()
         try:
             result = publish_to_fabric(
                 spec,

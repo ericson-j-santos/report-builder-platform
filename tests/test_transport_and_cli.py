@@ -90,7 +90,7 @@ class _ReadOnlyCursor:
         self.query = statement
 
     def fetchone(self) -> tuple[str | int, ...]:
-        return ("ExampleDb", "report_reader", 0, 0, 0, 0, 0, 0, 0)
+        return ("ExampleDb", "report_reader", "localhost", 0, 0, 0, 0, 0, 0, 0)
 
     def close(self) -> None:
         return None
@@ -502,3 +502,61 @@ def test_cli_publish_rejects_missing_readonly_dsn_before_provider_network(
     ) == 2
     assert json.loads(capsys.readouterr().out)["status"] == "failed"
     assert not called
+
+
+
+def test_cli_sql_preflight_reads_real_connection_contract_without_fabric_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    opened: list[_ReadOnlyConnection] = []
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def fake_connect(*args: Any, **kwargs: Any) -> _ReadOnlyConnection:
+        calls.append((args, kwargs))
+        connection = _ReadOnlyConnection()
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setenv("REPORT_BUILDER_READ_ONLY_DSN", "ReportingReader")
+    monkeypatch.delenv("FABRIC_ACCESS_TOKEN", raising=False)
+    monkeypatch.setitem(sys.modules, "pyodbc", SimpleNamespace(connect=fake_connect))
+    network = []
+    monkeypatch.setattr(
+        report_factory, "_request_json", lambda *args, **kwargs: network.append(args)
+    )
+
+    results = []
+    for _ in range(2):
+        assert report_factory.main(["sql-preflight", "--spec", str(SPEC_PATH)]) == 0
+        results.append(json.loads(capsys.readouterr().out))
+    assert results[0] == results[1]
+    assert results[0] == {
+        "status": "passed",
+        "sql_server_database_match": True,
+        "sql_effective_permissions_read_only": True,
+        "fabric_gateway_identity_verified": False,
+        "fabric_mutations_performed": False,
+        "external_e2e_verified": False,
+    }
+    assert len(opened) == len(calls) == 2
+    assert all(connection is not None for connection in opened)
+    assert all(args == ("DSN=ReportingReader;Trusted_Connection=Yes;ApplicationIntent=ReadOnly",)
+               for args, _ in calls)
+    assert all(kwargs.get("autocommit") is False and kwargs.get("timeout") == 10
+               for _, kwargs in calls)
+    assert network == []
+
+
+def test_cli_sql_preflight_fails_closed_without_dsn_and_no_network(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("REPORT_BUILDER_READ_ONLY_DSN", raising=False)
+    called = []
+    monkeypatch.setattr(
+        report_factory, "_request_json", lambda *args, **kwargs: called.append(args)
+    )
+    assert report_factory.main(["sql-preflight", "--spec", str(SPEC_PATH)]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "failed"
+    assert called == []
